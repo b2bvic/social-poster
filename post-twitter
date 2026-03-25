@@ -1,0 +1,144 @@
+#!/bin/bash
+# social-post-twitter.sh — Post tweet or thread to X/Twitter via v2 API
+# Usage: social-post-twitter.sh "Single tweet text"
+#    or: social-post-twitter.sh --thread "Tweet 1" "Tweet 2" "Tweet 3"
+#    or: echo "Tweet text" | social-post-twitter.sh
+#    or: echo -e "Tweet 1\n---TWEET---\nTweet 2" | social-post-twitter.sh --thread
+#
+# Requires: ~/.cache/social-auto/twitter-credentials.json
+#   Format: {"access_token": "...", "token_type": "bearer"}
+#
+# Exit 0: success (prints tweet URL)
+# Exit 1: failure (writes to errors.log)
+
+set -euo pipefail
+
+CACHE_DIR="$HOME/.cache/social-auto"
+CREDS_FILE="$CACHE_DIR/twitter-credentials.json"
+ERROR_LOG="$CACHE_DIR/errors.log"
+
+log_error() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S') | TWITTER | $1" >> "$ERROR_LOG"
+  echo "ERROR: $1" >&2
+  exit 1
+}
+
+# Parse mode
+THREAD_MODE=false
+TWEETS=()
+
+if [ "${1:-}" = "--thread" ]; then
+  THREAD_MODE=true
+  shift
+
+  if [ $# -ge 1 ]; then
+    # Tweets as separate arguments
+    TWEETS=("$@")
+  else
+    # Read from stdin, split on ---TWEET--- delimiter
+    FULL_INPUT=$(cat)
+    while IFS= read -r tweet; do
+      tweet=$(echo "$tweet" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
+      [ -n "$tweet" ] && TWEETS+=("$tweet")
+    done < <(echo "$FULL_INPUT" | awk 'BEGIN{RS="---TWEET---"} {print}')
+  fi
+
+  [ ${#TWEETS[@]} -eq 0 ] && log_error "Thread mode but no tweets provided"
+else
+  # Single tweet
+  if [ $# -ge 1 ]; then
+    TWEETS=("$1")
+  else
+    TWEETS=("$(cat)")
+  fi
+fi
+
+[ -z "${TWEETS[0]:-}" ] && log_error "No content provided"
+
+# Validate credentials
+[ ! -f "$CREDS_FILE" ] && log_error "Missing credentials: $CREDS_FILE — run OAuth flow first"
+
+ACCESS_TOKEN=$(python3 -c "import json; print(json.load(open('$CREDS_FILE'))['access_token'])" 2>/dev/null)
+[ -z "$ACCESS_TOKEN" ] && log_error "Could not read access_token from $CREDS_FILE"
+
+# Post a single tweet, optionally as reply
+# Args: $1 = tweet text, $2 = reply_to_id (optional)
+# Prints: tweet ID on success
+post_tweet() {
+  local TEXT="$1"
+  local REPLY_TO="${2:-}"
+
+  # Validate length
+  local CHAR_COUNT=${#TEXT}
+  if [ "$CHAR_COUNT" -gt 280 ]; then
+    log_error "Tweet exceeds 280 chars ($CHAR_COUNT): ${TEXT:0:50}..."
+  fi
+
+  # Build JSON payload
+  local ESCAPED_TEXT
+  ESCAPED_TEXT=$(printf '%s' "$TEXT" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')
+
+  local PAYLOAD
+  if [ -n "$REPLY_TO" ]; then
+    PAYLOAD="{\"text\": ${ESCAPED_TEXT}, \"reply\": {\"in_reply_to_tweet_id\": \"${REPLY_TO}\"}}"
+  else
+    PAYLOAD="{\"text\": ${ESCAPED_TEXT}}"
+  fi
+
+  local TMPFILE
+  TMPFILE=$(mktemp)
+  local HTTP_CODE
+  HTTP_CODE=$(curl -s -o "$TMPFILE" -w "%{http_code}" -X POST \
+    "https://api.x.com/2/tweets" \
+    -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "$PAYLOAD" 2>&1)
+
+  local BODY
+  BODY=$(cat "$TMPFILE")
+  rm -f "$TMPFILE"
+
+  case "$HTTP_CODE" in
+    201)
+      # Extract tweet ID from response
+      local TWEET_ID
+      TWEET_ID=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
+      echo "$TWEET_ID"
+      ;;
+    401)
+      log_error "Token expired or invalid (HTTP 401): $BODY"
+      ;;
+    403)
+      log_error "Forbidden (HTTP 403). Check app permissions: $BODY"
+      ;;
+    429)
+      log_error "Rate limited (HTTP 429). Free tier: 1,500 tweets/month. Body: $BODY"
+      ;;
+    *)
+      log_error "Unexpected HTTP $HTTP_CODE: $BODY"
+      ;;
+  esac
+}
+
+# Execute
+if [ "$THREAD_MODE" = true ] && [ ${#TWEETS[@]} -gt 1 ]; then
+  # Thread: post first tweet, then chain replies
+  FIRST_ID=$(post_tweet "${TWEETS[0]}")
+  [ -z "$FIRST_ID" ] && log_error "Failed to post first tweet in thread"
+
+  PREV_ID="$FIRST_ID"
+  for ((i=1; i<${#TWEETS[@]}; i++)); do
+    TWEET_ID=$(post_tweet "${TWEETS[$i]}" "$PREV_ID")
+    [ -z "$TWEET_ID" ] && log_error "Failed to post tweet $((i+1)) in thread (reply to $PREV_ID)"
+    PREV_ID="$TWEET_ID"
+  done
+
+  echo "https://x.com/i/status/${FIRST_ID}"
+else
+  # Single tweet
+  TWEET_ID=$(post_tweet "${TWEETS[0]}")
+  [ -z "$TWEET_ID" ] && log_error "Failed to post tweet"
+  echo "https://x.com/i/status/${TWEET_ID}"
+fi
+
+exit 0

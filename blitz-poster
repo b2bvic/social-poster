@@ -1,0 +1,181 @@
+#!/bin/bash
+# social-blitz-poster.sh — Post pre-scheduled Blitz campaign items
+# Reads blitz-queue.jsonl, finds items matching today's date with status "pending",
+# posts via API scripts, marks "posted".
+#
+# Designed for launchd daily execution at 8:00am.
+# Manual: .claude/scripts/social-blitz-poster.sh [--dry-run]
+#
+# Queue format (one JSON object per line):
+# {"date":"2026-02-05","platform":"linkedin","content_file":"path/to/post.md","status":"pending","section":"Post #1"}
+# {"date":"2026-02-06","platform":"twitter","content_file":"path/to/thread.md","status":"pending","section":"Thread #1"}
+
+set -euo pipefail
+
+CACHE_DIR="$HOME/.cache/social-auto"
+QUEUE_FILE="$CACHE_DIR/blitz-queue.jsonl"
+HISTORY_FILE="$CACHE_DIR/post-history.jsonl"
+ERROR_LOG="$CACHE_DIR/errors.log"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VAULT_ROOT="${SOCIAL_POSTER_ROOT:-$PWD}"
+
+DRY_RUN=false
+[ "${1:-}" = "--dry-run" ] && DRY_RUN=true
+
+TODAY=$(date '+%Y-%m-%d')
+
+log_error() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S') | BLITZ | $1" >> "$ERROR_LOG"
+  echo "ERROR: $1" >&2
+}
+
+# Validate queue exists
+if [ ! -f "$QUEUE_FILE" ]; then
+  echo "No blitz queue found at $QUEUE_FILE"
+  exit 0
+fi
+
+# Find today's pending items
+PENDING_ITEMS=$(grep "\"date\":\"${TODAY}\"" "$QUEUE_FILE" | grep "\"status\":\"pending\"" || true)
+
+if [ -z "$PENDING_ITEMS" ]; then
+  echo "No pending Blitz items for $TODAY"
+  exit 0
+fi
+
+POSTED=0
+FAILED=0
+
+while IFS= read -r item; do
+  [ -z "$item" ] && continue
+
+  PLATFORM=$(echo "$item" | python3 -c "import sys,json; print(json.load(sys.stdin)['platform'])")
+  CONTENT_FILE=$(echo "$item" | python3 -c "import sys,json; print(json.load(sys.stdin)['content_file'])")
+  SECTION=$(echo "$item" | python3 -c "import sys,json; print(json.load(sys.stdin).get('section','unknown'))")
+
+  # Resolve content file path
+  if [[ "$CONTENT_FILE" != /* ]]; then
+    CONTENT_FILE="$VAULT_ROOT/$CONTENT_FILE"
+  fi
+
+  if [ ! -f "$CONTENT_FILE" ]; then
+    log_error "Content file not found: $CONTENT_FILE (section: $SECTION)"
+    FAILED=$((FAILED + 1))
+    continue
+  fi
+
+  # Extract the specific section content from the file
+  # Blitz files contain multiple posts separated by ## Post/Thread headers
+  # The content_file might be the whole file — we need the section
+  CONTENT=$(python3 -c "
+import sys, re
+
+section = '$SECTION'
+with open('$CONTENT_FILE', 'r') as f:
+    text = f.read()
+
+# Find the section by header
+pattern = r'## ' + re.escape(section) + r'.*?\n---\n(.*?)(?=\n---\n|\Z)'
+match = re.search(pattern, text, re.DOTALL)
+if match:
+    content = match.group(1).strip()
+    # Remove metadata lines (CTA Type, Hashtags, etc.)
+    lines = content.split('\n')
+    clean_lines = []
+    for line in lines:
+        if line.startswith('**CTA Type:') or line.startswith('**Hashtags:') or line.startswith('**Hook'):
+            continue
+        clean_lines.append(line)
+    # Strip trailing empty lines
+    while clean_lines and not clean_lines[-1].strip():
+        clean_lines.pop()
+    print('\n'.join(clean_lines))
+else:
+    print('')
+" 2>/dev/null)
+
+  if [ -z "$CONTENT" ]; then
+    log_error "Could not extract section '$SECTION' from $CONTENT_FILE"
+    FAILED=$((FAILED + 1))
+    continue
+  fi
+
+  if [ "$DRY_RUN" = true ]; then
+    echo "=== DRY RUN: $PLATFORM / $SECTION ==="
+    echo "$CONTENT" | head -5
+    echo "..."
+    echo ""
+    continue
+  fi
+
+  # Post via platform script
+  RESULT=""
+  case "$PLATFORM" in
+    linkedin)
+      RESULT=$("$SCRIPT_DIR/social-post-linkedin.sh" "$CONTENT" 2>&1) || true
+      ;;
+    twitter)
+      # For threads, split on numbered tweets (1/, 2/, etc.)
+      if echo "$CONTENT" | grep -q "^[0-9]\+/"; then
+        # Extract individual tweets, pipe as thread
+        TWEETS=$(echo "$CONTENT" | python3 -c "
+import sys, re
+text = sys.stdin.read()
+tweets = re.split(r'\n\d+/\s*', text)
+tweets = [t.strip() for t in tweets if t.strip()]
+print('---TWEET---'.join(tweets))
+")
+        RESULT=$(echo "$TWEETS" | "$SCRIPT_DIR/social-post-twitter.sh" --thread 2>&1) || true
+      else
+        RESULT=$("$SCRIPT_DIR/social-post-twitter.sh" "$CONTENT" 2>&1) || true
+      fi
+      ;;
+    *)
+      log_error "Unknown platform: $PLATFORM"
+      FAILED=$((FAILED + 1))
+      continue
+      ;;
+  esac
+
+  if echo "$RESULT" | grep -q "^ERROR"; then
+    log_error "Failed to post $PLATFORM / $SECTION: $RESULT"
+    FAILED=$((FAILED + 1))
+  else
+    POSTED=$((POSTED + 1))
+
+    # Mark as posted in queue file
+    python3 -c "
+import json, sys
+
+queue_path = '$QUEUE_FILE'
+target_date = '$TODAY'
+target_section = '$SECTION'
+target_platform = '$PLATFORM'
+
+lines = open(queue_path).readlines()
+with open(queue_path, 'w') as f:
+    for line in lines:
+        try:
+            obj = json.loads(line.strip())
+            if (obj.get('date') == target_date and
+                obj.get('section') == target_section and
+                obj.get('platform') == target_platform and
+                obj.get('status') == 'pending'):
+                obj['status'] = 'posted'
+                obj['posted_at'] = '$(date -u +%Y-%m-%dT%H:%M:%SZ)'
+                obj['post_url'] = '$RESULT'
+            f.write(json.dumps(obj) + '\n')
+        except:
+            f.write(line)
+"
+
+    # Append to history
+    PREVIEW=$(echo "$CONTENT" | head -1 | cut -c1-60)
+    echo "{\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"platform\":\"$PLATFORM\",\"preview\":\"$PREVIEW\",\"source\":\"blitz\",\"section\":\"$SECTION\",\"post_url\":\"$RESULT\"}" >> "$HISTORY_FILE"
+
+    echo "Posted: $PLATFORM / $SECTION → $RESULT"
+  fi
+done <<< "$PENDING_ITEMS"
+
+echo "Blitz complete: $POSTED posted, $FAILED failed"
+exit 0

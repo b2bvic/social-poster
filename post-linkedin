@@ -1,0 +1,107 @@
+#!/bin/bash
+# social-post-linkedin.sh — Post text content to LinkedIn via v2 Posts API
+# Usage: social-post-linkedin.sh "Post content here"
+#    or: echo "Post content" | social-post-linkedin.sh
+#
+# Requires: ~/.cache/social-auto/linkedin-token.txt (OAuth 2.0 access token)
+#           ~/.cache/social-auto/linkedin-person-id.txt (LinkedIn person URN)
+#
+# Exit 0: success (prints post URL)
+# Exit 1: failure (writes to errors.log)
+
+set -euo pipefail
+
+CACHE_DIR="$HOME/.cache/social-auto"
+TOKEN_FILE="$CACHE_DIR/linkedin-token.txt"
+PERSON_ID_FILE="$CACHE_DIR/linkedin-person-id.txt"
+ERROR_LOG="$CACHE_DIR/errors.log"
+
+log_error() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S') | LINKEDIN | $1" >> "$ERROR_LOG"
+  echo "ERROR: $1" >&2
+  exit 1
+}
+
+# Read content from argument or stdin
+if [ $# -ge 1 ]; then
+  CONTENT="$1"
+else
+  CONTENT=$(cat)
+fi
+
+[ -z "$CONTENT" ] && log_error "No content provided"
+
+# Validate credentials exist
+[ ! -f "$TOKEN_FILE" ] && log_error "Missing token file: $TOKEN_FILE — run OAuth flow first"
+[ ! -f "$PERSON_ID_FILE" ] && log_error "Missing person ID file: $PERSON_ID_FILE"
+
+ACCESS_TOKEN=$(cat "$TOKEN_FILE" | tr -d '[:space:]')
+PERSON_ID=$(cat "$PERSON_ID_FILE" | tr -d '[:space:]')
+
+[ -z "$ACCESS_TOKEN" ] && log_error "Empty access token"
+[ -z "$PERSON_ID" ] && log_error "Empty person ID"
+
+# Escape content for JSON
+ESCAPED_CONTENT=$(printf '%s' "$CONTENT" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')
+
+# Build the v2 Posts API payload
+# Reference: https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/posts-api
+PAYLOAD=$(cat <<EOF
+{
+  "author": "urn:li:person:${PERSON_ID}",
+  "lifecycleState": "PUBLISHED",
+  "visibility": "PUBLIC",
+  "commentary": ${ESCAPED_CONTENT},
+  "distribution": {
+    "feedDistribution": "MAIN_FEED",
+    "targetEntities": [],
+    "thirdPartyDistributionChannels": []
+  }
+}
+EOF
+)
+
+# Post to LinkedIn (use -i to capture headers for post URN)
+TMPFILE=$(mktemp)
+HTTP_CODE=$(curl -s -o "$TMPFILE" -w "%{http_code}" -X POST \
+  "https://api.linkedin.com/rest/posts" \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -H "LinkedIn-Version: 202401" \
+  -H "X-Restli-Protocol-Version: 2.0.0" \
+  -D "${TMPFILE}.headers" \
+  -d "$PAYLOAD" 2>&1)
+
+BODY=$(cat "$TMPFILE")
+HEADERS=$(cat "${TMPFILE}.headers" 2>/dev/null || echo "")
+rm -f "$TMPFILE" "${TMPFILE}.headers"
+
+case "$HTTP_CODE" in
+  201)
+    # LinkedIn returns 201 with x-restli-id header containing post URN
+    POST_URN=$(echo "$HEADERS" | grep -i "x-restli-id" | sed 's/.*: //' | tr -d '[:space:]')
+    if [ -n "$POST_URN" ]; then
+      # URN format: urn:li:share:12345 — construct URL
+      SHARE_ID=$(echo "$POST_URN" | sed 's/urn:li:share://')
+      echo "https://www.linkedin.com/feed/update/${POST_URN}/"
+    else
+      echo "https://www.linkedin.com/feed/"
+    fi
+    exit 0
+    ;;
+  401)
+    log_error "Token expired or invalid (HTTP 401). Re-run OAuth flow to refresh: $BODY"
+    ;;
+  403)
+    log_error "Forbidden (HTTP 403). Check app permissions: $BODY"
+    ;;
+  422)
+    log_error "Unprocessable content (HTTP 422): $BODY"
+    ;;
+  429)
+    log_error "Rate limited (HTTP 429). Try again later: $BODY"
+    ;;
+  *)
+    log_error "Unexpected HTTP $HTTP_CODE: $BODY"
+    ;;
+esac
