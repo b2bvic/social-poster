@@ -53,6 +53,24 @@ echo '{"date":"2026-03-26","platform":"twitter","content":"Morning post","status
 
 Status lifecycle: `pending` → `posted` (with timestamp added)
 
+### Optional X/Twitter source context
+
+When a queued post needs public X/Twitter research before publishing, keep the
+evidence next to the queue item instead of mixing it into credentials or posting
+logic. TweetClaw from Xquik can provide reviewed source inputs such as search
+tweets, reply examples, creator profile notes, follower-export summaries, media
+references, source URLs, and `checkedAt` timestamps.
+
+Suggested optional fields:
+
+```jsonl
+{"date":"2026-03-26","platform":"twitter","content":"Tweet text here","status":"pending","sourceUrl":"SOURCE_URL","sourceType":"search","sourceCheckedAt":"2026-03-26T08:00:00Z"}
+```
+
+`blitz-poster` should still own queue processing, platform dispatch, status
+updates, and retries. Treat TweetClaw output as review context for the person
+preparing the queue.
+
 ## Auth Setup
 
 ### Twitter/X
