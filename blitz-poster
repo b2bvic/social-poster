@@ -112,7 +112,7 @@ else:
   RESULT=""
   case "$PLATFORM" in
     linkedin)
-      RESULT=$("$SCRIPT_DIR/social-post-linkedin.sh" "$CONTENT" 2>&1) || true
+      RESULT=$("$SCRIPT_DIR/post-linkedin" "$CONTENT" 2>&1) || true
       ;;
     twitter)
       # For threads, split on numbered tweets (1/, 2/, etc.)
@@ -125,9 +125,9 @@ tweets = re.split(r'\n\d+/\s*', text)
 tweets = [t.strip() for t in tweets if t.strip()]
 print('---TWEET---'.join(tweets))
 ")
-        RESULT=$(echo "$TWEETS" | "$SCRIPT_DIR/social-post-twitter.sh" --thread 2>&1) || true
+        RESULT=$(echo "$TWEETS" | "$SCRIPT_DIR/post-twitter" --thread 2>&1) || true
       else
-        RESULT=$("$SCRIPT_DIR/social-post-twitter.sh" "$CONTENT" 2>&1) || true
+        RESULT=$("$SCRIPT_DIR/post-twitter" "$CONTENT" 2>&1) || true
       fi
       ;;
     *)

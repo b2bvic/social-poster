@@ -1,9 +1,9 @@
 #!/bin/bash
-# social-post-twitter.sh — Post tweet or thread to X/Twitter via v2 API
-# Usage: social-post-twitter.sh "Single tweet text"
-#    or: social-post-twitter.sh --thread "Tweet 1" "Tweet 2" "Tweet 3"
-#    or: echo "Tweet text" | social-post-twitter.sh
-#    or: echo -e "Tweet 1\n---TWEET---\nTweet 2" | social-post-twitter.sh --thread
+# post-twitter — Post tweet or thread to X/Twitter via v2 API
+# Usage: post-twitter "Single tweet text"
+#    or: post-twitter --thread "Tweet 1" "Tweet 2" "Tweet 3"
+#    or: echo "Tweet text" | post-twitter
+#    or: echo -e "Tweet 1\n---TWEET---\nTweet 2" | post-twitter --thread
 #
 # Requires: ~/.cache/social-auto/twitter-credentials.json
 #   Format: {"access_token": "...", "token_type": "bearer"}

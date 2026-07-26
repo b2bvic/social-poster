@@ -1,7 +1,7 @@
 #!/bin/bash
-# social-post-linkedin.sh — Post text content to LinkedIn via v2 Posts API
-# Usage: social-post-linkedin.sh "Post content here"
-#    or: echo "Post content" | social-post-linkedin.sh
+# post-linkedin — Post text content to LinkedIn via v2 Posts API
+# Usage: post-linkedin "Post content here"
+#    or: echo "Post content" | post-linkedin
 #
 # Requires: ~/.cache/social-auto/linkedin-token.txt (OAuth 2.0 access token)
 #           ~/.cache/social-auto/linkedin-person-id.txt (LinkedIn person URN)
