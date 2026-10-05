@@ -7,7 +7,6 @@
 # Manual: .claude/scripts/social-blitz-poster.sh [--dry-run]
 #
 # Queue format (one JSON object per line):
-# {"date":"2026-02-05","platform":"linkedin","content_file":"path/to/post.md","status":"pending","section":"Post #1"}
 # {"date":"2026-02-06","platform":"twitter","content_file":"path/to/thread.md","status":"pending","section":"Thread #1"}
 
 set -euo pipefail
@@ -36,7 +35,18 @@ if [ ! -f "$QUEUE_FILE" ]; then
 fi
 
 # Find today's pending items
-PENDING_ITEMS=$(grep "\"date\":\"${TODAY}\"" "$QUEUE_FILE" | grep "\"status\":\"pending\"" || true)
+PENDING_ITEMS=$(python3 - "$QUEUE_FILE" "$TODAY" <<'PYEOF'
+import json, sys
+queue_path, target_date = sys.argv[1:]
+with open(queue_path) as queue:
+    for line in queue:
+        if not line.strip():
+            continue
+        item = json.loads(line)
+        if item.get("date") == target_date and item.get("status") == "pending":
+            print(json.dumps(item))
+PYEOF
+)
 
 if [ -z "$PENDING_ITEMS" ]; then
   echo "No pending Blitz items for $TODAY"
@@ -67,11 +77,11 @@ while IFS= read -r item; do
   # Extract the specific section content from the file
   # Blitz files contain multiple posts separated by ## Post/Thread headers
   # The content_file might be the whole file — we need the section
-  CONTENT=$(python3 -c "
+  CONTENT=$(python3 - "$SECTION" "$CONTENT_FILE" <<'PYEOF'
 import sys, re
 
-section = '$SECTION'
-with open('$CONTENT_FILE', 'r') as f:
+section, content_path = sys.argv[1:]
+with open(content_path, 'r') as f:
     text = f.read()
 
 # Find the section by header
@@ -92,7 +102,8 @@ if match:
     print('\n'.join(clean_lines))
 else:
     print('')
-" 2>/dev/null)
+PYEOF
+)
 
   if [ -z "$CONTENT" ]; then
     log_error "Could not extract section '$SECTION' from $CONTENT_FILE"
@@ -112,7 +123,9 @@ else:
   RESULT=""
   case "$PLATFORM" in
     linkedin)
-      RESULT=$("$SCRIPT_DIR/post-linkedin" "$CONTENT" 2>&1) || true
+      log_error "LinkedIn posting is retired."
+      FAILED=$((FAILED + 1))
+      continue
       ;;
     twitter)
       # For threads, split on numbered tweets (1/, 2/, etc.)
@@ -125,9 +138,17 @@ tweets = re.split(r'\n\d+/\s*', text)
 tweets = [t.strip() for t in tweets if t.strip()]
 print('---TWEET---'.join(tweets))
 ")
-        RESULT=$(echo "$TWEETS" | "$SCRIPT_DIR/post-twitter" --thread 2>&1) || true
+        RESULT=$(echo "$TWEETS" | "$SCRIPT_DIR/post-twitter" --thread 2>&1) || {
+          log_error "Failed to post $PLATFORM / $SECTION: $RESULT"
+          FAILED=$((FAILED + 1))
+          continue
+        }
       else
-        RESULT=$("$SCRIPT_DIR/post-twitter" "$CONTENT" 2>&1) || true
+        RESULT=$("$SCRIPT_DIR/post-twitter" "$CONTENT" 2>&1) || {
+          log_error "Failed to post $PLATFORM / $SECTION: $RESULT"
+          FAILED=$((FAILED + 1))
+          continue
+        }
       fi
       ;;
     *)
@@ -144,13 +165,11 @@ print('---TWEET---'.join(tweets))
     POSTED=$((POSTED + 1))
 
     # Mark as posted in queue file
-    python3 -c "
+    POSTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    python3 - "$QUEUE_FILE" "$TODAY" "$SECTION" "$PLATFORM" "$RESULT" "$POSTED_AT" <<'PYEOF'
 import json, sys
 
-queue_path = '$QUEUE_FILE'
-target_date = '$TODAY'
-target_section = '$SECTION'
-target_platform = '$PLATFORM'
+queue_path, target_date, target_section, target_platform, post_url, posted_at = sys.argv[1:]
 
 lines = open(queue_path).readlines()
 with open(queue_path, 'w') as f:
@@ -162,20 +181,28 @@ with open(queue_path, 'w') as f:
                 obj.get('platform') == target_platform and
                 obj.get('status') == 'pending'):
                 obj['status'] = 'posted'
-                obj['posted_at'] = '$(date -u +%Y-%m-%dT%H:%M:%SZ)'
-                obj['post_url'] = '$RESULT'
+                obj['posted_at'] = posted_at
+                obj['post_url'] = post_url
             f.write(json.dumps(obj) + '\n')
         except:
             f.write(line)
-"
+PYEOF
 
     # Append to history
     PREVIEW=$(echo "$CONTENT" | head -1 | cut -c1-60)
-    echo "{\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"platform\":\"$PLATFORM\",\"preview\":\"$PREVIEW\",\"source\":\"blitz\",\"section\":\"$SECTION\",\"post_url\":\"$RESULT\"}" >> "$HISTORY_FILE"
+    python3 - "$HISTORY_FILE" "$PLATFORM" "$PREVIEW" "$SECTION" "$RESULT" "$POSTED_AT" <<'PYEOF'
+import json, sys
+path, platform, preview, section, post_url, timestamp = sys.argv[1:]
+with open(path, "a") as history:
+    history.write(json.dumps({"timestamp": timestamp, "platform": platform,
+        "preview": preview, "source": "blitz", "section": section,
+        "post_url": post_url}) + "\n")
+PYEOF
 
     echo "Posted: $PLATFORM / $SECTION → $RESULT"
   fi
 done <<< "$PENDING_ITEMS"
 
 echo "Blitz complete: $POSTED posted, $FAILED failed"
+[ "$FAILED" -eq 0 ] || exit 1
 exit 0
