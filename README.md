@@ -1,6 +1,6 @@
 # X posting CLI with queue preview: social-poster
 
-Social-poster previews X posting queues for content teams. Use its JSONL workflow to inspect eligible items before invoking live publishing.
+`social-poster` previews X posting queues for content teams. Use its JSONL workflow to inspect eligible items before invoking live publishing.
 
 [Project page](https://scalewithsearch.com/code/social-poster)
 
@@ -22,6 +22,23 @@ python3 -m venv .venv
 ```
 
 These checks use synthetic input and perform no live sends.
+
+## Usage
+
+Preview the queue before any live run:
+
+```bash
+./blitz-poster --dry-run
+```
+
+Post directly to X:
+
+```bash
+./post-twitter "Single post text"
+./post-twitter --thread "Post 1" "Post 2"
+```
+
+The queue file is `~/.cache/social-auto/blitz-queue.jsonl`. X credentials come from `~/.cache/social-auto/twitter-credentials.json`. The `post-twitter` command publishes immediately.
 
 ## How it works
 
