@@ -1,36 +1,56 @@
-# social-poster
+# X posting CLI with queue preview: social-poster
 
-Command-line publishing tools with a JSONL queue and a preview path.
+Social-poster previews X posting queues for content teams. Use its JSONL workflow to inspect eligible items before invoking live publishing.
 
-The queue command can inspect eligible items without publishing. The
-`post-twitter` and `post-linkedin` commands perform live API writes when valid
-credentials are present. Review the exact text before using either command.
+[Project page](https://scalewithsearch.com/code/social-poster)
 
-## Principle cluster
+## Install
 
-This repository demonstrates **P09 (agency is governed)** and **P10 (production means persistence, bounded autonomy, and observability)** because the queue reader selects pending items for the current date and exits cleanly when no eligible item exists.
-
-[Read the principles](https://victorvalentineromo.com/principles).
-
-## Worked example
+Requirements: Python 3.11 or later.
 
 ```bash
-./blitz-poster --dry-run
+gh repo clone b2bvic/social-poster
+cd social-poster
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
 ```
 
-## Requirements and boundaries
+## Quick start
 
-- X requires `~/.cache/social-auto/twitter-credentials.json`.
-- LinkedIn requires the token and person-ID files documented in `post-linkedin`.
-- The direct platform commands have no preview mode.
-- A successful API response proves acceptance, not audience delivery.
+```bash
+.venv/bin/python -m pytest -q
+```
+
+These checks use synthetic input and perform no live sends.
+
+## How it works
+
+- Select pending records for the current date by parsing JSON.
+- Preview the first five content lines with --dry-run.
+- Publish X posts or threads and record accepted responses.
+- Reject the retired post-linkedin command without an API call.
+
+## Limits
+
+- Direct posting has no preview mode and performs live API writes.
+- Review the complete text before execution; the queue preview shows only five lines.
+- Queue rewrites are not transactional, and duplicate section identities can share status updates.
+- Thread parsing and API acceptance do not guarantee complete audience delivery.
+
+## Related repositories
+
+- [watchdog](https://github.com/b2bvic/watchdog)
+- [tg-notify](https://github.com/b2bvic/tg-notify)
+
+## Development
+
+```bash
+.venv/bin/python -m pytest -q
+.venv/bin/python -m ruff check --select E9,F63,F7,F82 tests
+```
+
+CI runs the portable tests and checks syntax-related Python lint rules.
 
 ## License
 
-MIT.
-
-## How this was built
-
-This 2026 README refit used model assistance.
-
-No claim is made about how the underlying code was authored or reviewed.
+MIT. See [LICENSE](LICENSE).
